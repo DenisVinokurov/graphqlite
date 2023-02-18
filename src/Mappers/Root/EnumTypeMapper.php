@@ -16,13 +16,19 @@ use ReflectionEnum;
 use ReflectionMethod;
 use ReflectionProperty;
 use Symfony\Contracts\Cache\CacheInterface;
+use TheCodingMachine\ClassExplorer\Glob\GlobClassExplorer;
 use TheCodingMachine\GraphQLite\AnnotationReader;
 use TheCodingMachine\GraphQLite\Types\EnumType;
+use TheCodingMachine\GraphQLite\Utils\NamespacedCache;
 use TheCodingMachine\GraphQLite\Utils\Namespaces\NS;
 use UnitEnum;
 
+use function array_map;
+use function array_merge;
 use function assert;
+use function class_exists;
 use function enum_exists;
+use function interface_exists;
 
 /**
  * Maps an enum class to a GraphQL type (only available in PHP>=8.1)
@@ -42,6 +48,7 @@ class EnumTypeMapper implements RootTypeMapperInterface
         private readonly AnnotationReader $annotationReader,
         private readonly CacheInterface $cacheService,
         private readonly array $namespaces,
+        private readonly NamespacedCache $namespacedCache,
     ) {
     }
 
@@ -164,21 +171,60 @@ class EnumTypeMapper implements RootTypeMapperInterface
     private function getNameToClassMapping(): array
     {
         if ($this->nameToClassMapping === null) {
-            $this->nameToClassMapping = $this->cacheService->get('enum_name_to_class', function () {
-                $nameToClassMapping = [];
-                foreach ($this->namespaces as $ns) {
-                    foreach ($ns->getClassList() as $className => $classRef) {
-                        if (! enum_exists($className)) {
-                            continue;
-                        }
-
-                        $nameToClassMapping[$this->getTypeName($classRef)] = $className;
-                    }
-                }
-                return $nameToClassMapping;
-            });
+            $this->nameToClassMapping = $this->cacheService->get(
+                'enum_name_to_class',
+                $this->fetchNameToClassMapping(...),
+            );
         }
 
         return $this->nameToClassMapping;
+    }
+
+    /** @return array<string, class-string<UnitEnum>> */
+    private function fetchNameToClassMapping(): array
+    {
+        $namespaces = array_map(static fn (NS $namespace) => $namespace->getNamespace(), $this->namespaces);
+
+        $classes = array_merge(
+            ...array_map(function (string $namespace) {
+                $explorer = new GlobClassExplorer($namespace, $this->namespacedCache, 2, recursive: true);
+                return $explorer->getClassMap();
+            }, $namespaces),
+        );
+
+        $nameToClassMapping = [];
+
+        foreach ($classes as $className => $phpFile) {
+            if (! class_exists($className, false) && ! interface_exists($className, false)) {
+                // Let's try to load the file if it was not imported yet.
+                // We are importing the file manually to avoid triggering the autoloader.
+                // The autoloader might trigger errors if the file does not respect PSR-4 or if the
+                // Symfony DebugAutoLoader is installed. (see https://github.com/thecodingmachine/graphqlite/issues/216)
+                require_once $phpFile;
+                // Does it exists now?
+                // @phpstan-ignore-next-line
+                if (! class_exists($className, false) && ! interface_exists($className, false)) {
+                    continue;
+                }
+            }
+
+            $refClass = new ReflectionClass($className);
+            // Enum's are not classes
+            if (! $refClass->isEnum()) {
+                continue;
+            }
+
+            $typeAnnotation = $this->annotationReader->getTypeAnnotation($refClass);
+
+            if (! $typeAnnotation) {
+                continue;
+            }
+
+            $typeName = $typeAnnotation->getName() ?? $refClass->getShortName();
+
+            $nameToClassMapping[$typeName] = '\\' . $className;
+        }
+
+        return $nameToClassMapping;
     }
 }

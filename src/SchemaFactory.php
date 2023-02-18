@@ -382,7 +382,7 @@ class SchemaFactory
         $rootTypeMapper = new BaseTypeMapper($errorRootTypeMapper, $recursiveTypeMapper, $topRootTypeMapper);
 
         if (interface_exists(UnitEnum::class)) {
-            $rootTypeMapper = new EnumTypeMapper($rootTypeMapper, $annotationReader, $symfonyCache, $nsList);
+            $rootTypeMapper = new EnumTypeMapper($rootTypeMapper, $annotationReader, $symfonyCache, $nsList, $namespacedCache);
         }
 
         if (class_exists(Enum::class)) {
