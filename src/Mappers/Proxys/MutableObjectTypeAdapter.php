@@ -36,6 +36,7 @@ final class MutableObjectTypeAdapter extends MutableObjectType
         $this->type = $type;
         $this->className = $className;
         $this->name = $type->name;
+        $type->description = $type->description ?? null;
         $this->config = $type->config;
         $this->astNode = $type->astNode;
         $this->extensionASTNodes = $type->extensionASTNodes;
