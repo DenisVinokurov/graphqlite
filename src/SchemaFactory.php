@@ -31,10 +31,12 @@ use TheCodingMachine\GraphQLite\Mappers\Root\CompoundTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\EnumTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\FinalRootTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\IteratorTypeMapper;
+use TheCodingMachine\GraphQLite\Mappers\Root\LastDelegatingTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\MyCLabsEnumTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\NullableTypeMapperAdapter;
 use TheCodingMachine\GraphQLite\Mappers\Root\RootTypeMapperFactoryContext;
 use TheCodingMachine\GraphQLite\Mappers\Root\RootTypeMapperFactoryInterface;
+use TheCodingMachine\GraphQLite\Mappers\Root\VoidTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\TypeMapperFactoryInterface;
 use TheCodingMachine\GraphQLite\Mappers\TypeMapperInterface;
 use TheCodingMachine\GraphQLite\Middlewares\AuthorizationFieldMiddleware;
@@ -209,6 +211,9 @@ class SchemaFactory
         return $this;
     }
 
+    /**
+     * @deprecated Use PHP8 Attributes instead
+     */
     public function setDoctrineAnnotationReader(Reader $annotationReader): self
     {
         $this->doctrineAnnotationReader = $annotationReader;
@@ -222,13 +227,7 @@ class SchemaFactory
      */
     private function getDoctrineAnnotationReader(CacheItemPoolInterface $cache): Reader
     {
-        if ($this->doctrineAnnotationReader === null) {
-            AnnotationRegistry::registerLoader('class_exists');
-
-            return new PsrCachedReader(new DoctrineAnnotationReader(), $cache, true);
-        }
-
-        return $this->doctrineAnnotationReader;
+        return $this->doctrineAnnotationReader ?? new PsrCachedReader(new DoctrineAnnotationReader(), $cache, true);
     }
 
     public function setAuthenticationService(AuthenticationServiceInterface $authenticationService): self
@@ -376,7 +375,9 @@ class SchemaFactory
         $compositeTypeMapper = new CompositeTypeMapper();
         $recursiveTypeMapper = new RecursiveTypeMapper($compositeTypeMapper, $namingStrategy, $namespacedCache, $typeRegistry, $annotationReader);
 
-        $topRootTypeMapper = new NullableTypeMapperAdapter();
+        $lastTopRootTypeMapper = new LastDelegatingTypeMapper();
+        $topRootTypeMapper = new NullableTypeMapperAdapter($lastTopRootTypeMapper);
+        $topRootTypeMapper = new VoidTypeMapper($topRootTypeMapper);
 
         $errorRootTypeMapper = new FinalRootTypeMapper($recursiveTypeMapper);
         $rootTypeMapper = new BaseTypeMapper($errorRootTypeMapper, $recursiveTypeMapper, $topRootTypeMapper);
@@ -398,6 +399,7 @@ class SchemaFactory
                 $recursiveTypeMapper,
                 $this->container,
                 $namespacedCache,
+                $nsList,
                 $this->globTTL,
             );
 
@@ -410,7 +412,7 @@ class SchemaFactory
         $rootTypeMapper = new CompoundTypeMapper($rootTypeMapper, $topRootTypeMapper, $namingStrategy, $typeRegistry, $recursiveTypeMapper);
         $rootTypeMapper = new IteratorTypeMapper($rootTypeMapper, $topRootTypeMapper);
 
-        $topRootTypeMapper->setNext($rootTypeMapper);
+        $lastTopRootTypeMapper->setNext($rootTypeMapper);
 
         $argumentResolver = new ArgumentResolver();
 

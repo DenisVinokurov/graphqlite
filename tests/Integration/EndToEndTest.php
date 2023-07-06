@@ -48,9 +48,11 @@ use TheCodingMachine\GraphQLite\Mappers\Root\CompoundTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\EnumTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\FinalRootTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\IteratorTypeMapper;
+use TheCodingMachine\GraphQLite\Mappers\Root\LastDelegatingTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\MyCLabsEnumTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\Root\NullableTypeMapperAdapter;
 use TheCodingMachine\GraphQLite\Mappers\Root\RootTypeMapperInterface;
+use TheCodingMachine\GraphQLite\Mappers\Root\VoidTypeMapper;
 use TheCodingMachine\GraphQLite\Mappers\TypeMapperInterface;
 use TheCodingMachine\GraphQLite\Middlewares\AuthorizationFieldMiddleware;
 use TheCodingMachine\GraphQLite\Middlewares\AuthorizationInputFieldMiddleware;
@@ -297,7 +299,14 @@ class EndToEndTest extends TestCase
                 return new CachedDocBlockFactory(new Psr16Cache($arrayAdapter));
             },
             RootTypeMapperInterface::class => static function (ContainerInterface $container) {
-                return new NullableTypeMapperAdapter();
+                return new VoidTypeMapper(
+                    new NullableTypeMapperAdapter(
+                        $container->get('topRootTypeMapper')
+                    )
+                );
+            },
+            'topRootTypeMapper' => static function () {
+                return new LastDelegatingTypeMapper();
             },
             'rootTypeMapper' => static function (ContainerInterface $container) {
                 // These are in reverse order of execution
@@ -363,7 +372,7 @@ class EndToEndTest extends TestCase
         }
         $container->get(TypeMapperInterface::class)->addTypeMapper($container->get(PorpaginasTypeMapper::class));
 
-        $container->get(RootTypeMapperInterface::class)->setNext($container->get('rootTypeMapper'));
+        $container->get('topRootTypeMapper')->setNext($container->get('rootTypeMapper'));
         /*$container->get(CompositeRootTypeMapper::class)->addRootTypeMapper(new CompoundTypeMapper($container->get(RootTypeMapperInterface::class), $container->get(TypeRegistry::class), $container->get(RecursiveTypeMapperInterface::class)));
         $container->get(CompositeRootTypeMapper::class)->addRootTypeMapper(new IteratorTypeMapper($container->get(RootTypeMapperInterface::class), $container->get(TypeRegistry::class), $container->get(RecursiveTypeMapperInterface::class)));
         $container->get(CompositeRootTypeMapper::class)->addRootTypeMapper(new IteratorTypeMapper($container->get(RootTypeMapperInterface::class), $container->get(TypeRegistry::class), $container->get(RecursiveTypeMapperInterface::class)));
@@ -1175,7 +1184,62 @@ class EndToEndTest extends TestCase
         $this->assertSame(['echoProductType' => 'NON_FOOD'], $this->getSuccessResult($result));
     }
 
-    /** @requires PHP >= 8.1 */
+    public function testEndToEndMutationNativeEnums(): void
+    {
+        $schema = $this->mainContainer->get(Schema::class);
+        assert($schema instanceof Schema);
+
+        $gql = '
+        mutation($size:Size!) {
+            singleEnum(size: $size)
+        }
+        ';
+        $result = GraphQL::executeQuery(
+            $schema,
+            $gql,
+            variableValues: [
+                'size' => Size::L->name,
+            ],
+        );
+
+        $this->assertSame([
+            'singleEnum' => 'L',
+        ], $this->getSuccessResult($result));
+    }
+
+    public function testEndToEndInputVars(): void
+    {
+        $schema = $this->mainContainer->get(Schema::class);
+        assert($schema instanceof Schema);
+
+        $queryString = '
+            mutation ($contact: ContactInput!) {
+                saveContact(contact: $contact) {
+                    name,
+                    birthDate
+                }
+            }
+        ';
+
+        $result = GraphQL::executeQuery(
+            $schema,
+            $queryString,
+            variableValues: [
+                'contact' => [
+                    'name' => "foo",
+                    'birthDate' => "1942-12-24T00:00:00+00:00"
+                ]
+            ]
+        );
+
+        $this->assertSame([
+            'saveContact' => [
+                'name' => 'foo',
+                'birthDate' => '1942-12-24T00:00:00+00:00'
+            ],
+        ], $this->getSuccessResult($result));
+    }
+
     public function testEndToEndNativeEnums(): void
     {
         $schema = $this->mainContainer->get(Schema::class);
@@ -1680,6 +1744,29 @@ class EndToEndTest extends TestCase
         );
 
         $this->assertSame(42, $result->toArray(DebugFlag::RETHROW_UNSAFE_EXCEPTIONS)['data']['injectedUser']);
+    }
+
+    public function testEndToEndInjectUserUnauthenticated(): void
+    {
+        $container = $this->createContainer([
+            AuthenticationServiceInterface::class => static fn () => new VoidAuthenticationService(),
+        ]);
+
+        $schema = $container->get(Schema::class);
+        assert($schema instanceof Schema);
+
+        $queryString = '
+            query {
+                injectedUser
+            }
+        ';
+
+        $result = GraphQL::executeQuery(
+            $schema,
+            $queryString,
+        );
+
+        $this->assertSame('You need to be logged to access this field', $result->toArray(DebugFlag::RETHROW_UNSAFE_EXCEPTIONS)['errors'][0]['message']);
     }
 
     public function testInputOutputNameConflict(): void
@@ -2411,5 +2498,29 @@ class EndToEndTest extends TestCase
 
         $data = $this->getSuccessResult($result);
         $this->assertSame(['graph', 'ql'], $data['updateTrickyProduct']['list']);
+    }
+
+    public function testEndToEndVoidResult(): void
+    {
+        $schema = $this->mainContainer->get(Schema::class);
+        assert($schema instanceof Schema);
+
+        $gql = '
+            mutation($id: ID!) {
+                deleteButton(id: $id)
+            }
+        ';
+
+        $result = GraphQL::executeQuery(
+            $schema,
+            $gql,
+            variableValues: [
+                'id' => 123,
+            ],
+        );
+
+        self::assertSame([
+            'deleteButton' => null,
+        ], $this->getSuccessResult($result));
     }
 }
